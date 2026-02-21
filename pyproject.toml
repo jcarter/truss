@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "truss"
+version = "0.1.0"
+description = "A collection of AI support scripts"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31,<3",
+    "python-dotenv>=1.0,<2",
+    "atlas-doc-parser>=1.0,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+]
+
+[project.scripts]
+extract-issue = "truss.extract_issue:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
