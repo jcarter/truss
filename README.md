@@ -24,11 +24,38 @@ pip install -e ".[dev]"
 
 # Configure credentials (see Environment below)
 cp .env.example .env   # then fill in values
+```
 
-# Extract an issue
+## Usage
+
+The editable install (`pip install -e .`) registers `extract-issue` as a console script inside the venv. As long as the venv is active you can call it directly:
+
+```bash
 extract-issue PROJ-123
 extract-issue https://myorg.atlassian.net/browse/PROJ-123
 extract-issue https://myorg.sentry.io/issues/456789 --format json
+```
+
+If the venv is **not** active, use the full path to the venv's binary:
+
+```bash
+.venv/bin/extract-issue PROJ-123
+```
+
+or make an alias
+```
+alias extract-issue=".venv/bin/extract-issue"
+```
+
+You can also run the individual extractors as Python modules without needing the console script:
+
+```bash
+# With venv active
+python -m truss.jira_extractor PROJ-123
+python -m truss.sentry_extractor https://myorg.sentry.io/issues/456789
+
+# Without venv active
+.venv/bin/python -m truss.jira_extractor PROJ-123
 ```
 
 ## Environment
@@ -50,7 +77,11 @@ SENTRY_AUTH_TOKEN=your-sentry-token
 ## Running tests
 
 ```bash
+# With venv active
 pytest
+
+# Without venv active
+.venv/bin/pytest
 ```
 
 ## Project structure
