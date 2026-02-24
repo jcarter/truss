@@ -13,6 +13,7 @@ from truss.jira_extractor import (
     extract_text_from_adf,
     adf_to_markdown,
     _clean_markdown,
+    _extract_custom_field,
     main,
 )
 
@@ -121,7 +122,7 @@ def test_fetch_ticket_success():
 
     mock_get.assert_called_once_with(
         "https://test.atlassian.net/rest/api/3/issue/PROJ-123",
-        params={"fields": "summary,description,status,issuetype,priority,assignee,reporter,customfield_11271"},
+        params={"fields": "summary,description,status,issuetype,priority,assignee,reporter,customfield_11271,customfield_11504"},
         auth=("user@test.com", "test-token"),
         timeout=30,
     )
@@ -159,6 +160,53 @@ def test_fetch_ticket_auth_failure():
             fetch_ticket(config, "PROJ-123")
 
 
+def test_fetch_ticket_connection_error():
+    config = {
+        "url": "https://test.atlassian.net",
+        "email": "user@test.com",
+        "token": "test-token",
+    }
+    import requests as req
+    with patch("truss.jira_extractor.requests.get", side_effect=req.ConnectionError("refused")):
+        with pytest.raises(JiraError, match="Could not connect"):
+            fetch_ticket(config, "PROJ-123")
+
+
+def test_fetch_ticket_server_error():
+    config = {
+        "url": "https://test.atlassian.net",
+        "email": "user@test.com",
+        "token": "test-token",
+    }
+    mock_response = Mock()
+    mock_response.status_code = 500
+
+    with patch("truss.jira_extractor.requests.get", return_value=mock_response):
+        with pytest.raises(JiraError, match="500"):
+            fetch_ticket(config, "PROJ-123")
+
+
+# ---------------------------------------------------------------------------
+# _extract_custom_field
+# ---------------------------------------------------------------------------
+
+
+def test_extract_custom_field_dict():
+    assert _extract_custom_field({"value": "backend"}) == "backend"
+
+
+def test_extract_custom_field_dict_name_fallback():
+    assert _extract_custom_field({"name": "prod"}) == "prod"
+
+
+def test_extract_custom_field_list():
+    assert _extract_custom_field(["a", "b"]) == "a, b"
+
+
+def test_extract_custom_field_other():
+    assert _extract_custom_field(42) == "42"
+
+
 # ---------------------------------------------------------------------------
 # SAMPLE fixtures
 # ---------------------------------------------------------------------------
@@ -183,6 +231,15 @@ SAMPLE_ISSUE = {
         "assignee": {"displayName": "Jane Doe"},
         "reporter": {"displayName": "John Smith"},
         "customfield_11271": "backend/api/auth.py",
+        "customfield_11504": {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "Verify login works after password reset."}],
+                }
+            ],
+        },
     },
 }
 
@@ -306,6 +363,8 @@ def test_format_markdown():
     assert "backend/api/auth.py" in result
     assert "## Description" in result
     assert "Users cannot log in after password reset." in result
+    assert "## Acceptance Criteria / Test Cases" in result
+    assert "Verify login works after password reset." in result
 
 
 def test_format_markdown_unassigned():
@@ -325,6 +384,7 @@ def test_format_markdown_unassigned():
     assert "Unassigned" in result
     assert "No description provided." in result
     assert "TBD" in result
+    assert "## Acceptance Criteria / Test Cases" not in result
 
 
 def test_format_json():
@@ -339,6 +399,7 @@ def test_format_json():
     assert parsed["reporter"] == "John Smith"
     assert parsed["code_config"] == "backend/api/auth.py"
     assert parsed["description"] == "Users cannot log in after password reset."
+    assert parsed["acceptance_criteria"] == "Verify login works after password reset."
 
 
 def test_format_plain():
@@ -354,6 +415,28 @@ def test_format_plain():
     assert "Code/Config: backend/api/auth.py" in result
     assert "Description:" in result
     assert "Users cannot log in after password reset." in result
+    assert "Acceptance Criteria / Test Cases:" in result
+    assert "Verify login works after password reset." in result
+
+
+def test_format_plain_acceptance_criteria_string():
+    """When acceptance criteria is a plain string (not ADF), it should still render."""
+    issue = {
+        "key": "PROJ-789",
+        "fields": {
+            "summary": "String AC ticket",
+            "description": None,
+            "status": {"name": "Open"},
+            "issuetype": {"name": "Task"},
+            "priority": {"name": "Medium"},
+            "assignee": None,
+            "reporter": {"displayName": "John Smith"},
+            "customfield_11504": "Must pass all unit tests.",
+        },
+    }
+    result = format_plain(issue)
+    assert "Acceptance Criteria / Test Cases:" in result
+    assert "Must pass all unit tests." in result
 
 
 def test_format_plain_unassigned():
@@ -373,6 +456,7 @@ def test_format_plain_unassigned():
     assert "Assignee:    Unassigned" in result
     assert "Code/Config: TBD" in result
     assert "No description provided." in result
+    assert "Acceptance Criteria / Test Cases:" not in result
 
 
 # ---------------------------------------------------------------------------

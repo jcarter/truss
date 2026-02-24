@@ -58,7 +58,7 @@ def load_config():
     return config
 
 
-FIELDS = "summary,description,status,issuetype,priority,assignee,reporter,customfield_11271"
+FIELDS = "summary,description,status,issuetype,priority,assignee,reporter,customfield_11271,customfield_11504"
 
 
 def fetch_ticket(config, ticket_key):
@@ -148,6 +148,17 @@ def _extract_custom_field(value):
     return str(value)
 
 
+def _render_acceptance_criteria(raw, converter):
+    """Return rendered acceptance criteria text, or None if the field is empty."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw if raw.strip() else None
+    if isinstance(raw, dict):
+        return converter(raw)
+    return None
+
+
 def format_markdown(issue):
     fields = issue["fields"]
     key = issue["key"]
@@ -159,8 +170,9 @@ def format_markdown(issue):
     reporter = fields["reporter"]["displayName"] if fields.get("reporter") else "Unknown"
     code_config = _extract_custom_field(fields.get("customfield_11271"))
     description = adf_to_markdown(fields.get("description"))
+    ac = _render_acceptance_criteria(fields.get("customfield_11504"), adf_to_markdown)
 
-    return f"""# {key}: {summary}
+    result = f"""# {key}: {summary}
 
 | Field       | Value            |
 |-------------|------------------|
@@ -175,6 +187,13 @@ def format_markdown(issue):
 
 {description}
 """
+    if ac:
+        result += f"""
+## Acceptance Criteria / Test Cases
+
+{ac}
+"""
+    return result
 
 
 def format_plain(issue):
@@ -188,8 +207,9 @@ def format_plain(issue):
     reporter = fields["reporter"]["displayName"] if fields.get("reporter") else "Unknown"
     code_config = _extract_custom_field(fields.get("customfield_11271"))
     description = extract_text_from_adf(fields.get("description"))
+    ac = _render_acceptance_criteria(fields.get("customfield_11504"), extract_text_from_adf)
 
-    return f"""{key}: {summary}
+    result = f"""{key}: {summary}
 
 Status:      {status}
 Type:        {issue_type}
@@ -202,10 +222,18 @@ Description:
 
 {description}
 """
+    if ac:
+        result += f"""
+Acceptance Criteria / Test Cases:
+
+{ac}
+"""
+    return result
 
 
 def format_json(issue):
     fields = issue["fields"]
+    ac = _render_acceptance_criteria(fields.get("customfield_11504"), adf_to_markdown)
     return json.dumps(
         {
             "key": issue["key"],
@@ -217,6 +245,7 @@ def format_json(issue):
             "reporter": fields["reporter"]["displayName"] if fields.get("reporter") else None,
             "code_config": _extract_custom_field(fields.get("customfield_11271")),
             "description": adf_to_markdown(fields.get("description")),
+            "acceptance_criteria": ac,
         },
         indent=2,
     )

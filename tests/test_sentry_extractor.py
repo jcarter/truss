@@ -122,6 +122,23 @@ def test_fetch_issue_auth_failure():
             fetch_issue(config, "myorg", "12345")
 
 
+def test_fetch_issue_connection_error():
+    config = {"token": "test-token"}
+    with patch.object(mod.requests, "get", side_effect=mod.requests.ConnectionError("refused")):
+        with pytest.raises(SentryError, match="Could not connect"):
+            fetch_issue(config, "myorg", "12345")
+
+
+def test_fetch_issue_server_error():
+    config = {"token": "test-token"}
+    mock_response = Mock()
+    mock_response.status_code = 500
+
+    with patch.object(mod.requests, "get", return_value=mock_response):
+        with pytest.raises(SentryError, match="500"):
+            fetch_issue(config, "myorg", "12345")
+
+
 SAMPLE_EVENT_RESPONSE = {
     "eventID": "abc123",
     "id": "abc123",
@@ -233,6 +250,33 @@ def test_fetch_latest_event_none_on_404():
     assert result is None
 
 
+def test_fetch_latest_event_connection_error():
+    config = {"token": "test-token"}
+    with patch.object(mod.requests, "get", side_effect=mod.requests.ConnectionError("refused")):
+        with pytest.raises(SentryError, match="Could not connect"):
+            fetch_latest_event(config, "myorg", "12345")
+
+
+def test_fetch_latest_event_auth_failure():
+    config = {"token": "test-token"}
+    mock_response = Mock()
+    mock_response.status_code = 401
+
+    with patch.object(mod.requests, "get", return_value=mock_response):
+        with pytest.raises(SentryError, match="Authentication failed"):
+            fetch_latest_event(config, "myorg", "12345")
+
+
+def test_fetch_latest_event_server_error():
+    config = {"token": "test-token"}
+    mock_response = Mock()
+    mock_response.status_code = 500
+
+    with patch.object(mod.requests, "get", return_value=mock_response):
+        with pytest.raises(SentryError, match="500"):
+            fetch_latest_event(config, "myorg", "12345")
+
+
 SAMPLE_TAGS = [
     {"key": "environment", "values": [{"value": "production", "count": 30}, {"value": "staging", "count": 5}]},
     {"key": "browser", "values": [{"value": "Chrome 121.0", "count": 10}]},
@@ -279,6 +323,13 @@ def test_fetch_tag_details_skips_failed():
     with patch.object(mod.requests, "get", return_value=mock_response):
         result = fetch_tag_details(config, "myorg", "12345", ["nonexistent"])
 
+    assert result == []
+
+
+def test_fetch_tag_details_connection_error():
+    config = {"token": "test-token"}
+    with patch.object(mod.requests, "get", side_effect=mod.requests.ConnectionError("refused")):
+        result = fetch_tag_details(config, "myorg", "12345", ["environment"])
     assert result == []
 
 
@@ -623,3 +674,68 @@ def test_main_plain_output(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "TypeError: Cannot read property 'foo' of undefined" in captured.out
     assert "# " not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Thread context line rendering
+# ---------------------------------------------------------------------------
+
+SAMPLE_THREADS_WITH_CONTEXT_EVENT = {
+    "eventID": "ctx123",
+    "title": "Timeout error",
+    "message": "Timeout error",
+    "entries": [
+        {
+            "type": "threads",
+            "data": {
+                "values": [
+                    {
+                        "id": "thread1",
+                        "name": None,
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "filename": "lib/app/handler.ex",
+                                    "lineNo": 42,
+                                    "function": "MyApp.Handler.call/2",
+                                    "context": [
+                                        [40, "  def call(conn, opts) do"],
+                                        [41, "    params = conn.params"],
+                                        [42, "    process(params)"],
+                                    ],
+                                },
+                            ],
+                        },
+                    }
+                ],
+            },
+        },
+    ],
+    "contexts": {},
+}
+
+
+def test_format_markdown_thread_with_context():
+    issue = {**SAMPLE_ISSUE_RESPONSE, "title": "Timeout error"}
+    result = format_markdown(issue, SAMPLE_THREADS_WITH_CONTEXT_EVENT)
+    assert "## Stack Trace" in result
+    assert "process(params)" in result
+
+
+def test_format_plain_thread_with_context():
+    issue = {**SAMPLE_ISSUE_RESPONSE, "title": "Timeout error"}
+    result = format_plain(issue, SAMPLE_THREADS_WITH_CONTEXT_EVENT)
+    assert "Stack Trace:" in result
+    assert "process(params)" in result
+
+
+def test_main_sentry_error_exits(monkeypatch, capsys):
+    monkeypatch.setenv("SENTRY_AUTH_TOKEN", "test-token")
+
+    with patch("truss.sentry_extractor.fetch_issue", side_effect=SentryError("test error")):
+        with patch("sys.argv", ["sentry_extractor", "https://myorg.sentry.io/issues/12345/"]):
+            with pytest.raises(SystemExit):
+                main()
+
+    captured = capsys.readouterr()
+    assert "test error" in captured.err

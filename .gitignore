@@ -7,3 +7,11 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+.coverage
+
+# Claude auto-memory (project-local, not for source control)
+memory/
+
+docs/*
+conductor/*
+.claude/*
