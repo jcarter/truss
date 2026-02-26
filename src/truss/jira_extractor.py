@@ -1,16 +1,29 @@
 import argparse
 import json
+import logging
 import os
 import re
 import sys
 
 import requests
 from atlas_doc_parser.api import NodeDoc
+from atlas_doc_parser.exc import UnimplementedTypeError
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 class JiraError(Exception):
     """Raised when a Jira API operation fails."""
+
+
+# Jira custom field IDs
+CUSTOM_FIELD_CODE_CONFIG = "customfield_11271"
+CUSTOM_FIELD_ACCEPTANCE_CRITERIA = "customfield_11504"
+
+# Canonical Jira URL/key patterns.
+JIRA_URL_PATTERN = r"https?://[^/]+/browse/([A-Z][A-Z0-9_]+-\d+)"
+JIRA_TICKET_KEY_PATTERN = r"^[A-Z][A-Z0-9_]+-\d+$"
 
 
 def parse_ticket_input(value):
@@ -20,14 +33,11 @@ def parse_ticket_input(value):
         https://myorg.atlassian.net/browse/PROJ-123
         https://myorg.atlassian.net/browse/PROJ-123?extra=params
     """
-    url_match = re.match(
-        r"https?://[^/]+/browse/([A-Z][A-Z0-9_]+-\d+)",
-        value,
-    )
+    url_match = re.match(JIRA_URL_PATTERN, value)
     if url_match:
         return url_match.group(1)
 
-    if re.match(r"^[A-Z][A-Z0-9_]+-\d+$", value):
+    if re.match(JIRA_TICKET_KEY_PATTERN, value):
         return value
 
     raise ValueError(
@@ -58,7 +68,7 @@ def load_config():
     return config
 
 
-FIELDS = "summary,description,status,issuetype,priority,assignee,reporter,customfield_11271,customfield_11504"
+FIELDS = f"summary,description,status,issuetype,priority,assignee,reporter,{CUSTOM_FIELD_CODE_CONFIG},{CUSTOM_FIELD_ACCEPTANCE_CRITERIA}"
 
 
 def fetch_ticket(config, ticket_key):
@@ -115,7 +125,8 @@ def adf_to_markdown(adf):
         md = doc.to_markdown().strip()
         md = _clean_markdown(md)
         return md if md else "No description provided."
-    except Exception:
+    except (UnimplementedTypeError, KeyError, TypeError, AttributeError, ValueError) as e:
+        logger.debug("ADF markdown conversion failed (%s), falling back to plain text", e)
         return extract_text_from_adf(adf)
 
 
@@ -159,29 +170,41 @@ def _render_acceptance_criteria(raw, converter):
     return None
 
 
-def format_markdown(issue):
-    fields = issue["fields"]
-    key = issue["key"]
-    summary = fields["summary"]
-    status = fields["status"]["name"]
-    issue_type = fields["issuetype"]["name"]
-    priority = fields["priority"]["name"] if fields.get("priority") else "None"
-    assignee = fields["assignee"]["displayName"] if fields.get("assignee") else "Unassigned"
-    reporter = fields["reporter"]["displayName"] if fields.get("reporter") else "Unknown"
-    code_config = _extract_custom_field(fields.get("customfield_11271"))
-    description = adf_to_markdown(fields.get("description"))
-    ac = _render_acceptance_criteria(fields.get("customfield_11504"), adf_to_markdown)
+def _extract_common_fields(issue):
+    """Extract common fields from a Jira issue response.
 
-    result = f"""# {key}: {summary}
+    Returns a dict with raw values (None for missing optional fields).
+    Display-format callers should apply their own defaults.
+    """
+    fields = issue["fields"]
+    return {
+        "key": issue["key"],
+        "summary": fields["summary"],
+        "status": fields["status"]["name"],
+        "issue_type": fields["issuetype"]["name"],
+        "priority": fields["priority"]["name"] if fields.get("priority") else None,
+        "assignee": fields["assignee"]["displayName"] if fields.get("assignee") else None,
+        "reporter": fields["reporter"]["displayName"] if fields.get("reporter") else None,
+        "code_config": _extract_custom_field(fields.get(CUSTOM_FIELD_CODE_CONFIG)),
+    }
+
+
+def format_markdown(issue):
+    f = _extract_common_fields(issue)
+    fields = issue["fields"]
+    description = adf_to_markdown(fields.get("description"))
+    ac = _render_acceptance_criteria(fields.get(CUSTOM_FIELD_ACCEPTANCE_CRITERIA), adf_to_markdown)
+
+    result = f"""# {f['key']}: {f['summary']}
 
 | Field       | Value            |
 |-------------|------------------|
-| Status      | {status} |
-| Type        | {issue_type} |
-| Priority    | {priority} |
-| Assignee    | {assignee} |
-| Reporter    | {reporter} |
-| Code/Config | {code_config or 'TBD'} |
+| Status      | {f['status']} |
+| Type        | {f['issue_type']} |
+| Priority    | {f['priority'] or 'None'} |
+| Assignee    | {f['assignee'] or 'Unassigned'} |
+| Reporter    | {f['reporter'] or 'Unknown'} |
+| Code/Config | {f['code_config'] or 'TBD'} |
 
 ## Description
 
@@ -197,26 +220,19 @@ def format_markdown(issue):
 
 
 def format_plain(issue):
+    f = _extract_common_fields(issue)
     fields = issue["fields"]
-    key = issue["key"]
-    summary = fields["summary"]
-    status = fields["status"]["name"]
-    issue_type = fields["issuetype"]["name"]
-    priority = fields["priority"]["name"] if fields.get("priority") else "None"
-    assignee = fields["assignee"]["displayName"] if fields.get("assignee") else "Unassigned"
-    reporter = fields["reporter"]["displayName"] if fields.get("reporter") else "Unknown"
-    code_config = _extract_custom_field(fields.get("customfield_11271"))
     description = extract_text_from_adf(fields.get("description"))
-    ac = _render_acceptance_criteria(fields.get("customfield_11504"), extract_text_from_adf)
+    ac = _render_acceptance_criteria(fields.get(CUSTOM_FIELD_ACCEPTANCE_CRITERIA), extract_text_from_adf)
 
-    result = f"""{key}: {summary}
+    result = f"""{f['key']}: {f['summary']}
 
-Status:      {status}
-Type:        {issue_type}
-Priority:    {priority}
-Assignee:    {assignee}
-Reporter:    {reporter}
-Code/Config: {code_config or 'TBD'}
+Status:      {f['status']}
+Type:        {f['issue_type']}
+Priority:    {f['priority'] or 'None'}
+Assignee:    {f['assignee'] or 'Unassigned'}
+Reporter:    {f['reporter'] or 'Unknown'}
+Code/Config: {f['code_config'] or 'TBD'}
 
 Description:
 
@@ -232,18 +248,19 @@ Acceptance Criteria / Test Cases:
 
 
 def format_json(issue):
+    f = _extract_common_fields(issue)
     fields = issue["fields"]
-    ac = _render_acceptance_criteria(fields.get("customfield_11504"), adf_to_markdown)
+    ac = _render_acceptance_criteria(fields.get(CUSTOM_FIELD_ACCEPTANCE_CRITERIA), adf_to_markdown)
     return json.dumps(
         {
-            "key": issue["key"],
-            "summary": fields["summary"],
-            "status": fields["status"]["name"],
-            "type": fields["issuetype"]["name"],
-            "priority": fields["priority"]["name"] if fields.get("priority") else None,
-            "assignee": fields["assignee"]["displayName"] if fields.get("assignee") else None,
-            "reporter": fields["reporter"]["displayName"] if fields.get("reporter") else None,
-            "code_config": _extract_custom_field(fields.get("customfield_11271")),
+            "key": f["key"],
+            "summary": f["summary"],
+            "status": f["status"],
+            "type": f["issue_type"],
+            "priority": f["priority"],
+            "assignee": f["assignee"],
+            "reporter": f["reporter"],
+            "code_config": f["code_config"],
             "description": adf_to_markdown(fields.get("description")),
             "acceptance_criteria": ac,
         },

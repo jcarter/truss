@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from truss.sentry_extractor import (
     SentryError,
+    SENTRY_URL_PATTERNS,
     parse_issue_url,
     load_config as sentry_load_config,
     fetch_issue as sentry_fetch_issue,
@@ -21,6 +22,8 @@ from truss.sentry_extractor import (
 )
 from truss.jira_extractor import (
     JiraError,
+    JIRA_URL_PATTERN,
+    JIRA_TICKET_KEY_PATTERN,
     parse_ticket_input,
     load_config as jira_load_config,
     fetch_ticket,
@@ -38,18 +41,14 @@ class Source(enum.Enum):
 
 def detect_source(value):
     """Detect whether the input is a Sentry URL, Jira URL, or Jira ticket key."""
-    sentry_patterns = [
-        r"https?://[^.]+\.sentry\.io/issues/\d+",
-        r"https?://[^.]+\.sentry\.io/organizations/[^/]+/issues/\d+",
-    ]
-    for pattern in sentry_patterns:
+    for pattern in SENTRY_URL_PATTERNS:
         if re.match(pattern, value):
             return Source.SENTRY
 
-    if re.match(r"https?://[^/]+/browse/[A-Z][A-Z0-9_]+-\d+", value):
+    if re.match(JIRA_URL_PATTERN, value):
         return Source.JIRA
 
-    if re.match(r"^[A-Z][A-Z0-9_]+-\d+$", value):
+    if re.match(JIRA_TICKET_KEY_PATTERN, value):
         return Source.JIRA
 
     return Source.UNKNOWN

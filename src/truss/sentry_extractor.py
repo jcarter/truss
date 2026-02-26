@@ -20,14 +20,22 @@ INCLUDED_TAGS = [
     "state",
 ]
 
+# Canonical Sentry URL patterns (with capture groups for org_slug and issue_id).
+SENTRY_URL_PATTERNS = [
+    r"https?://([^.]+)\.sentry\.io/issues/(\d+)",
+    r"https?://([^.]+)\.sentry\.io/organizations/[^/]+/issues/(\d+)",
+]
+
+# Variants for finding Sentry URLs in free text (no capture groups, greedy suffix).
+SENTRY_URL_SEARCH_PATTERNS = [
+    r"https?://[^\s)>\"']+\.sentry\.io/issues/\d+[^\s)>\"']*",
+    r"https?://[^\s)>\"']+\.sentry\.io/organizations/[^\s)>\"']+/issues/\d+[^\s)>\"']*",
+]
+
 
 def parse_issue_url(url):
     """Parse a Sentry issue URL and return (org_slug, issue_id)."""
-    patterns = [
-        r"https?://([^.]+)\.sentry\.io/issues/(\d+)",
-        r"https?://([^.]+)\.sentry\.io/organizations/[^/]+/issues/(\d+)",
-    ]
-    for pattern in patterns:
+    for pattern in SENTRY_URL_PATTERNS:
         match = re.match(pattern, url)
         if match:
             return match.group(1), match.group(2)
@@ -97,6 +105,18 @@ def _extract_frames(stacktrace):
             "context": frame.get("context", []),
         })
     return frames
+
+
+def _render_frames(frames):
+    """Render stack trace frames as indented text lines (most recent call first)."""
+    lines = []
+    for frame in reversed(frames):
+        line_info = f", line {frame['line']}" if frame["line"] else ""
+        lines.append(f"  File \"{frame['filename']}\"{line_info}, in {frame['function']}")
+        for ctx in frame.get("context", []):
+            if len(ctx) == 2 and ctx[0] == frame["line"]:
+                lines.append(f"    {ctx[1].strip()}")
+    return lines
 
 
 def extract_message(event):
@@ -251,12 +271,7 @@ def format_markdown(issue, event, tags=None):
         if exc["frames"]:
             lines.append("## Stack Trace\n")
             lines.append("```")
-            for frame in reversed(exc["frames"]):
-                line_info = f", line {frame['line']}" if frame["line"] else ""
-                lines.append(f"  File \"{frame['filename']}\"{line_info}, in {frame['function']}")
-                for ctx in frame.get("context", []):
-                    if len(ctx) == 2 and ctx[0] == frame["line"]:
-                        lines.append(f"    {ctx[1].strip()}")
+            lines.extend(_render_frames(exc["frames"]))
             lines.append("```")
 
     if not exceptions:
@@ -264,12 +279,7 @@ def format_markdown(issue, event, tags=None):
         for thread in threads:
             lines.append(f"\n## Stack Trace\n")
             lines.append("```")
-            for frame in reversed(thread["frames"]):
-                line_info = f", line {frame['line']}" if frame["line"] else ""
-                lines.append(f"  File \"{frame['filename']}\"{line_info}, in {frame['function']}")
-                for ctx in frame.get("context", []):
-                    if len(ctx) == 2 and ctx[0] == frame["line"]:
-                        lines.append(f"    {ctx[1].strip()}")
+            lines.extend(_render_frames(thread["frames"]))
             lines.append("```")
 
     breadcrumbs = extract_breadcrumbs(event)
@@ -387,24 +397,14 @@ def format_plain(issue, event, tags=None):
         if exc["frames"]:
             lines.append("")
             lines.append("Stack Trace:")
-            for frame in reversed(exc["frames"]):
-                line_info = f", line {frame['line']}" if frame["line"] else ""
-                lines.append(f"  File \"{frame['filename']}\"{line_info}, in {frame['function']}")
-                for ctx in frame.get("context", []):
-                    if len(ctx) == 2 and ctx[0] == frame["line"]:
-                        lines.append(f"    {ctx[1].strip()}")
+            lines.extend(_render_frames(exc["frames"]))
 
     if not exceptions:
         threads = extract_threads(event)
         for thread in threads:
             lines.append("")
             lines.append("Stack Trace:")
-            for frame in reversed(thread["frames"]):
-                line_info = f", line {frame['line']}" if frame["line"] else ""
-                lines.append(f"  File \"{frame['filename']}\"{line_info}, in {frame['function']}")
-                for ctx in frame.get("context", []):
-                    if len(ctx) == 2 and ctx[0] == frame["line"]:
-                        lines.append(f"    {ctx[1].strip()}")
+            lines.extend(_render_frames(thread["frames"]))
 
     breadcrumbs = extract_breadcrumbs(event)
     if breadcrumbs:

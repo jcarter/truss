@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 from truss.extract_issue import run_jira, run_sentry
 from truss.jira_extractor import JiraError
-from truss.sentry_extractor import SentryError
+from truss.sentry_extractor import SentryError, SENTRY_URL_SEARCH_PATTERNS
 
 
 class ReviewPRError(Exception):
@@ -104,13 +104,9 @@ def find_sentry_urls(text):
     """
     if not text:
         return []
-    patterns = [
-        r"https?://[^\s)>\"']+\.sentry\.io/issues/\d+[^\s)>\"']*",
-        r"https?://[^\s)>\"']+\.sentry\.io/organizations/[^\s)>\"']+/issues/\d+[^\s)>\"']*",
-    ]
     seen = set()
     result = []
-    for pattern in patterns:
+    for pattern in SENTRY_URL_SEARCH_PATTERNS:
         for match in re.findall(pattern, text):
             # Normalize by stripping trailing slashes, query params, fragments for dedup
             normalized = re.sub(r"[?#].*$", "", match).rstrip("/")
