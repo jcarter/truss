@@ -21,6 +21,7 @@ dev = [
 
 [project.scripts]
 extract-issue = "truss.extract_issue:main"
+review-pr = "truss.review_pr:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
