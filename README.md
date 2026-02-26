@@ -116,4 +116,4 @@ tests/
 
 ## License
 
-Private.
+MIT
