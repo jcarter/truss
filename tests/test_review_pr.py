@@ -10,6 +10,7 @@ from truss.review_pr import (
     run_gh,
     fetch_pr_metadata,
     fetch_pr_diff,
+    validate_git_repo,
     checkout_pr,
     find_jira_keys,
     find_sentry_urls,
@@ -109,6 +110,43 @@ class TestCheckoutPR:
         with patch("truss.review_pr.run_gh") as mock_gh:
             checkout_pr("https://github.com/acme/repo/pull/42")
         mock_gh.assert_called_once_with(["pr", "checkout", "https://github.com/acme/repo/pull/42"])
+
+
+class TestValidateGitRepo:
+    def _mock_run(self, returncode=0, stdout="", stderr=""):
+        return Mock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_https_remote_matches(self):
+        mock_result = self._mock_run(stdout="https://github.com/acme/repo.git\n")
+        with patch("truss.review_pr.subprocess.run", return_value=mock_result):
+            validate_git_repo("acme", "repo")  # Should not raise
+
+    def test_ssh_remote_matches(self):
+        mock_result = self._mock_run(stdout="git@github.com:acme/repo.git\n")
+        with patch("truss.review_pr.subprocess.run", return_value=mock_result):
+            validate_git_repo("acme", "repo")  # Should not raise
+
+    def test_https_remote_without_dot_git(self):
+        mock_result = self._mock_run(stdout="https://github.com/acme/repo\n")
+        with patch("truss.review_pr.subprocess.run", return_value=mock_result):
+            validate_git_repo("acme", "repo")  # Should not raise
+
+    def test_mismatch_raises(self):
+        mock_result = self._mock_run(stdout="https://github.com/other/project.git\n")
+        with patch("truss.review_pr.subprocess.run", return_value=mock_result):
+            with pytest.raises(ReviewPRError, match="does not match"):
+                validate_git_repo("acme", "repo")
+
+    def test_not_a_git_repo(self):
+        mock_result = self._mock_run(returncode=1, stderr="not a git repo")
+        with patch("truss.review_pr.subprocess.run", return_value=mock_result):
+            with pytest.raises(ReviewPRError, match="Not in a git repository"):
+                validate_git_repo("acme", "repo")
+
+    def test_git_not_installed(self):
+        with patch("truss.review_pr.subprocess.run", side_effect=FileNotFoundError):
+            with pytest.raises(ReviewPRError, match="git is not installed"):
+                validate_git_repo("acme", "repo")
 
 
 class TestFindJiraKeys:
@@ -226,59 +264,80 @@ class TestBuildPrompt:
         "number": 42,
         "url": "https://github.com/acme/repo/pull/42",
     }
-    DIFF = "diff --git a/login.py b/login.py\n+fixed\n"
     EMPTY_CONTEXT = {"jira": [], "sentry": []}
 
     def test_contains_pr_title(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
         assert "Fix login bug" in prompt
 
     def test_contains_author(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
         assert "dev" in prompt
 
     def test_contains_branch_info(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
         assert "fix/login" in prompt
         assert "main" in prompt
 
-    def test_contains_diff(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
-        assert self.DIFF in prompt
+    def test_no_inline_diff(self):
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
+        assert "```diff" not in prompt
+
+    def test_instructs_local_git_review(self):
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
+        assert "git log main..HEAD" in prompt
+        assert "git diff main..HEAD" in prompt
+        assert "git show <commit>" in prompt
 
     def test_contains_review_instructions(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
         assert "Review Instructions" in prompt
-        assert "gh api" in prompt
+
+    def test_contains_gh_pr_review_instructions(self):
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
+        assert "gh pr-review" in prompt
+        assert "Posting Review Comments" in prompt
+        assert "review start" in prompt
+        assert "add-comment" in prompt
+        assert "review submit" in prompt
+
+    def test_contains_owner_repo_in_commands(self):
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
+        assert "-R acme/repo" in prompt
+
+    def test_contains_suggestion_markdown(self):
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
+        assert "Suggestion Markdown" in prompt
+        assert "```suggestion" in prompt
 
     def test_contains_pr_description(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
         assert "Resolves PROJ-123" in prompt
 
     def test_skips_empty_body(self):
         meta = {**self.METADATA, "body": ""}
-        prompt = build_prompt(meta, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(meta, self.EMPTY_CONTEXT)
         assert "PR Description" not in prompt
 
     def test_skips_none_body(self):
         meta = {**self.METADATA, "body": None}
-        prompt = build_prompt(meta, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(meta, self.EMPTY_CONTEXT)
         assert "PR Description" not in prompt
 
     def test_includes_jira_context(self):
         ctx = {"jira": [("PROJ-1", "# PROJ-1: Bug")], "sentry": []}
-        prompt = build_prompt(self.METADATA, self.DIFF, ctx)
+        prompt = build_prompt(self.METADATA, ctx)
         assert "Jira: PROJ-1" in prompt
         assert "# PROJ-1: Bug" in prompt
 
     def test_includes_sentry_context(self):
         ctx = {"jira": [], "sentry": [("https://x.sentry.io/issues/1", "# Error")]}
-        prompt = build_prompt(self.METADATA, self.DIFF, ctx)
+        prompt = build_prompt(self.METADATA, ctx)
         assert "Sentry Issue" in prompt
         assert "# Error" in prompt
 
     def test_no_linked_section_when_empty(self):
-        prompt = build_prompt(self.METADATA, self.DIFF, self.EMPTY_CONTEXT)
+        prompt = build_prompt(self.METADATA, self.EMPTY_CONTEXT)
         assert "Linked Issue Context" not in prompt
 
 
@@ -294,20 +353,15 @@ class TestMainCLI:
         "url": "https://github.com/acme/repo/pull/42",
     }
 
-    def _run_main(self, argv, metadata=None, diff="diff\n", checkout=True):
+    def _run_main(self, argv, metadata=None):
         meta = metadata or self.METADATA
-        patches = {
-            "truss.review_pr.fetch_pr_metadata": meta,
-            "truss.review_pr.fetch_pr_diff": diff,
-            "truss.review_pr.gather_context": {"jira": [], "sentry": []},
-        }
         with patch("sys.argv", ["review-pr"] + argv):
-            with patch("truss.review_pr.checkout_pr") as mock_checkout:
-                with patch("truss.review_pr.fetch_pr_metadata", return_value=patches["truss.review_pr.fetch_pr_metadata"]):
-                    with patch("truss.review_pr.fetch_pr_diff", return_value=patches["truss.review_pr.fetch_pr_diff"]):
-                        with patch("truss.review_pr.gather_context", return_value=patches["truss.review_pr.gather_context"]):
+            with patch("truss.review_pr.validate_git_repo") as mock_validate:
+                with patch("truss.review_pr.checkout_pr") as mock_checkout:
+                    with patch("truss.review_pr.fetch_pr_metadata", return_value=meta):
+                        with patch("truss.review_pr.gather_context", return_value={"jira": [], "sentry": []}):
                             main()
-        return mock_checkout
+        return mock_validate, mock_checkout
 
     def test_outputs_prompt(self, capsys):
         self._run_main([self.PR_URL])
@@ -315,8 +369,12 @@ class TestMainCLI:
         assert "Code Review" in captured.out
         assert "Fix bug" in captured.out
 
+    def test_validate_git_repo_called(self):
+        mock_validate, _ = self._run_main([self.PR_URL])
+        mock_validate.assert_called_once_with("acme", "repo")
+
     def test_checkout_called(self):
-        mock_checkout = self._run_main([self.PR_URL])
+        _, mock_checkout = self._run_main([self.PR_URL])
         mock_checkout.assert_called_once_with(self.PR_URL)
 
     def test_invalid_url_exits(self, capsys):
@@ -325,9 +383,16 @@ class TestMainCLI:
                 main()
         assert "Could not parse" in capsys.readouterr().err
 
+    def test_repo_mismatch_exits(self, capsys):
+        with patch("sys.argv", ["review-pr", self.PR_URL]):
+            with patch("truss.review_pr.validate_git_repo", side_effect=ReviewPRError("does not match")):
+                with pytest.raises(SystemExit):
+                    main()
+        assert "does not match" in capsys.readouterr().err
+
     def test_gh_error_exits(self, capsys):
         with patch("sys.argv", ["review-pr", self.PR_URL]):
-            with patch("truss.review_pr.parse_pr_url", return_value=("a", "b", "1")):
+            with patch("truss.review_pr.validate_git_repo"):
                 with patch("truss.review_pr.checkout_pr", side_effect=ReviewPRError("gh failed")):
                     with pytest.raises(SystemExit):
                         main()
